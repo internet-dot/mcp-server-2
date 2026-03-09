@@ -3,9 +3,9 @@ package net.portswigger.mcp
 import burp.api.montoya.MontoyaApi
 import burp.api.montoya.logging.Logging
 import burp.api.montoya.persistence.PersistedObject
-import io.modelcontextprotocol.kotlin.sdk.TextContent
 import io.mockk.every
 import io.mockk.mockk
+import io.modelcontextprotocol.kotlin.sdk.TextContent
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import net.portswigger.mcp.config.McpConfig
@@ -13,11 +13,13 @@ import org.junit.jupiter.api.AfterEach
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.BeforeEach
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.Timeout
 import org.junit.jupiter.api.assertDoesNotThrow
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.net.ServerSocket
-import kotlin.time.Duration.Companion.seconds
+import java.util.concurrent.TimeUnit
+import kotlin.time.Duration.Companion.milliseconds
 
 /**
  * End-to-end test verifying the full stack:
@@ -25,6 +27,7 @@ import kotlin.time.Duration.Companion.seconds
  *
  * Requires libs/mcp-proxy-all.jar to be present (built via `./gradlew embedProxyJar` from root).
  */
+@Timeout(30, unit = TimeUnit.SECONDS)
 class ProxyEndToEndTest {
     private val logger = LoggerFactory.getLogger(ProxyEndToEndTest::class.java)
 
@@ -32,6 +35,8 @@ class ProxyEndToEndTest {
     private val serverManager = KtorServerManager(api)
     private val testPort = findAvailablePort()
     private val persistedObject = mockk<PersistedObject>()
+
+    @Volatile
     private var serverStarted = false
 
     init {
@@ -76,7 +81,7 @@ class ProxyEndToEndTest {
 
         val jarFile = File("libs/mcp-proxy-all.jar")
         check(jarFile.exists()) {
-            "libs/mcp-proxy-all.jar not found. Build it first: ./gradlew embedProxyJar (from repo root)"
+            "libs/mcp-proxy-all.jar not found. Build it and copy it to libs first: ./gradlew embedProxyJar (from proxy repo root)"
         }
 
         proxyProcess = ProcessBuilder(
@@ -88,11 +93,25 @@ class ProxyEndToEndTest {
             "http://127.0.0.1:$testPort"
         ).redirectError(ProcessBuilder.Redirect.INHERIT).start()
 
-        delay(3.seconds)
-
         client = TestStdioMcpClient()
-        client.connectToServer(proxyProcess.inputStream, proxyProcess.outputStream)
+        connectClientWithRetry()
         logger.info("Test client connected to proxy on port $testPort")
+    }
+
+    private suspend fun connectClientWithRetry() {
+        val maxAttempts = 10
+        val retryDelay = 500.milliseconds
+        for (attempt in 1..maxAttempts) {
+            check(proxyProcess.isAlive) { "Proxy process died during startup" }
+            try {
+                client.connectToServer(proxyProcess.inputStream, proxyProcess.outputStream)
+                return
+            } catch (e: Exception) {
+                if (attempt == maxAttempts) throw e
+                logger.info("Proxy not ready (attempt $attempt/$maxAttempts), retrying...")
+                delay(retryDelay)
+            }
+        }
     }
 
     @AfterEach
@@ -108,8 +127,7 @@ class ProxyEndToEndTest {
         try {
             if (::proxyProcess.isInitialized) {
                 proxyProcess.destroy()
-                if (proxyProcess.isAlive) {
-                    delay(1000)
+                if (!proxyProcess.waitFor(2, TimeUnit.SECONDS)) {
                     proxyProcess.destroyForcibly()
                 }
             }
@@ -117,7 +135,7 @@ class ProxyEndToEndTest {
             logger.warn("Error destroying proxy process: ${e.message}")
         }
 
-        serverManager.stop {}
+        serverManager.shutdown()
     }
 
     @Test
@@ -142,6 +160,7 @@ class ProxyEndToEndTest {
             val result = client.callTool("url_encode", mapOf("content" to "hello world"))
             assertNotNull(result, "Tool call result should not be null")
             assertFalse(result?.isError ?: true, "Tool call should not return an error")
+            assertTrue(result?.content?.first() is TextContent, "Result should contain TextContent")
         }
     }
 }
