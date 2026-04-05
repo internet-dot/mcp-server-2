@@ -1,0 +1,16 @@
+{
+  "name": "mcp-server",
+  "version": "0.1.0",
+  "description": "MCP Server for Burp",
+  "author": {
+    "name": "PortSwigger",
+    "url": "https://github.com/PortSwigger"
+  },
+  "homepage": "https://github.com/PortSwigger/mcp-server",
+  "repository": "https://github.com/PortSwigger/mcp-server",
+  "keywords": [
+    "mcp",
+    "codex"
+  ],
+  "mcpServers": "./.mcp.json"
+}
